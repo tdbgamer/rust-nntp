@@ -15,3 +15,6 @@ path = "src/nntp.rs"
 [[bin]]
 name = "example"
 path = "example.rs"
+
+[dependencies]
+failure = "0.1.1"
