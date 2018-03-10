@@ -369,7 +369,7 @@ impl NNTPStream {
         let code: isize = FromStr::from_str(v[0]).unwrap();
         let message = v[1];
         if code != expected_code {
-            bail!("Invalid response");
+            bail!("Invalid response code: {}", code);
         }
         Ok((code, message.to_string()))
     }
