@@ -13,15 +13,38 @@ use std::net::{ToSocketAddrs, SocketAddr};
 use std::vec::Vec;
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::ops::Deref;
 
 use failure::Error;
 use openssl::ssl::{SslMethod, SslConnector, SslStream};
 
 pub type NNTPResult<T> = Result<T, Error>;
 
+struct AllowedCodes(Vec<isize>);
+
+impl Deref for AllowedCodes {
+    type Target = Vec<isize>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<isize> for AllowedCodes {
+    fn from(num: isize) -> Self {
+        AllowedCodes(vec![num])
+    }
+}
+
+impl From<Vec<isize>> for AllowedCodes {
+    fn from(nums: Vec<isize>) -> Self {
+        AllowedCodes(nums)
+    }
+}
+
 enum InternalStream {
     Normal(TcpStream),
-    Ssl(SslStream<TcpStream>)
+    Ssl(SslStream<TcpStream>),
 }
 
 impl InternalStream {
@@ -40,7 +63,7 @@ impl Read for InternalStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match *self {
             InternalStream::Normal(ref mut s) => s.read(buf),
-            InternalStream::Ssl(ref mut s)    => s.read(buf)
+            InternalStream::Ssl(ref mut s) => s.read(buf)
         }
     }
 }
@@ -49,14 +72,14 @@ impl Write for InternalStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match *self {
             InternalStream::Normal(ref mut s) => s.write(buf),
-            InternalStream::Ssl(ref mut s)    => s.write(buf)
+            InternalStream::Ssl(ref mut s) => s.write(buf)
         }
     }
 
     fn flush(&mut self) -> io::Result<()> {
         match *self {
             InternalStream::Normal(ref mut s) => s.flush(),
-            InternalStream::Ssl(ref mut s)    => s.flush()
+            InternalStream::Ssl(ref mut s) => s.flush()
         }
     }
 }
@@ -137,8 +160,10 @@ impl NNTPStream {
 
     pub fn login<T>(&mut self, username: T, password: T) -> NNTPResult<()>
         where T: Into<String> {
-        self.stream.write_fmt(format_args!("AUTHINFO USER {}", username.into()))?;
-        self.stream.write_fmt(format_args!("AUTHINFO PASS {}", password.into()))?;
+        self.stream.write_fmt(format_args!("AUTHINFO USER {}\r\n", username.into()))?;
+        self.read_response(381)?;
+        self.stream.write_fmt(format_args!("AUTHINFO PASS {}\r\n", password.into()))?;
+        self.read_response(vec![250, 281])?;
         Ok(())
     }
 
@@ -346,7 +371,8 @@ impl NNTPStream {
     }
 
     //Retrieve single line response
-    fn read_response(&mut self, expected_code: isize) -> NNTPResult<(isize, String)> {
+    fn read_response<T>(&mut self, expected_code: T) -> NNTPResult<(isize, String)>
+        where T: Into<AllowedCodes> {
         let cr = b'\r';
         let lf = b'\n';
         let mut line_buffer: Vec<u8> = Vec::new();
@@ -368,7 +394,7 @@ impl NNTPStream {
         let v: Vec<&str> = trimmed_response.splitn(2, ' ').collect();
         let code: isize = FromStr::from_str(v[0]).unwrap();
         let message = v[1];
-        if code != expected_code {
+        if !expected_code.into().contains(&code) {
             bail!("Invalid response code: {}", code);
         }
         Ok((code, message.to_string()))
