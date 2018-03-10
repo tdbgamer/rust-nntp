@@ -18,3 +18,4 @@ path = "example.rs"
 
 [dependencies]
 failure = "0.1.1"
+openssl = "0.10.5"

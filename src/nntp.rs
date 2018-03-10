@@ -2,24 +2,68 @@
 #![crate_type = "lib"]
 #[macro_use]
 extern crate failure;
+extern crate openssl;
 
 //#![feature(collections)]
 
 use std::string::String;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::TcpStream;
-use std::net::ToSocketAddrs;
+use std::net::{ToSocketAddrs, SocketAddr};
 use std::vec::Vec;
 use std::collections::HashMap;
 use std::str::FromStr;
 
 use failure::Error;
+use openssl::ssl::{SslMethod, SslConnector, SslStream};
 
 pub type NNTPResult<T> = Result<T, Error>;
 
+enum InternalStream {
+    Normal(TcpStream),
+    Ssl(SslStream<TcpStream>)
+}
+
+impl InternalStream {
+    pub fn connect(host: &str, addr: &SocketAddr, timeout: u64) -> NNTPResult<Self> {
+        use std::time::Duration;
+        let connector = SslConnector::builder(SslMethod::tls())?.build();
+        let tcp_stream = TcpStream::connect_timeout(&addr, Duration::from_secs(timeout))?;
+        match connector.connect(&host, tcp_stream) {
+            Ok(stream) => Ok(InternalStream::Ssl(stream)),
+            Err(_) => Ok(InternalStream::Normal(TcpStream::connect_timeout(&addr, Duration::from_secs(timeout))?))
+        }
+    }
+}
+
+impl Read for InternalStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match *self {
+            InternalStream::Normal(ref mut s) => s.read(buf),
+            InternalStream::Ssl(ref mut s)    => s.read(buf)
+        }
+    }
+}
+
+impl Write for InternalStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match *self {
+            InternalStream::Normal(ref mut s) => s.write(buf),
+            InternalStream::Ssl(ref mut s)    => s.write(buf)
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match *self {
+            InternalStream::Normal(ref mut s) => s.flush(),
+            InternalStream::Ssl(ref mut s)    => s.flush()
+        }
+    }
+}
+
 /// Stream to be used for interfacing with a NNTP server.
 pub struct NNTPStream {
-    stream: TcpStream,
+    stream: InternalStream,
 }
 
 pub struct Article {
@@ -68,14 +112,25 @@ impl NewsGroup {
     }
 }
 
+fn open_socket(addr: (&str, u16)) -> NNTPResult<InternalStream> {
+    let mut last_error = format_err!("Every socket failed to connect");
+    for socket_addr in addr.to_socket_addrs()? {
+        match InternalStream::connect(&addr.0, &socket_addr, 10) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => {
+                last_error = e;
+            }
+        };
+    }
+    Err(last_error)
+}
+
 impl NNTPStream {
     /// Creates an NNTP Stream.
-    pub fn connect<A: ToSocketAddrs>(addr: A) -> NNTPResult<NNTPStream> {
-        use std::time::Duration;
-        let addr = addr.to_socket_addrs()?.next()
-            .ok_or(format_err!("At least one address must be given"))?;
-        let tcp_stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
-        let mut socket = NNTPStream { stream: tcp_stream };
+    pub fn connect(addr: (&str, u16)) -> NNTPResult<NNTPStream> {
+        let mut socket = NNTPStream {
+            stream: open_socket(addr)?
+        };
         socket.read_response(200)?;
         Ok(socket)
     }
