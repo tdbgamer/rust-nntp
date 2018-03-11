@@ -194,6 +194,11 @@ impl NNTPStream {
         self.retrieve_body(&format!("BODY\r\n"))
     }
 
+    /// Retrieves the body of the article id as bytes.
+    pub fn body_by_id_bytes(&mut self, article_id: &str) {
+        self.retrieve_body_bytes(&format!("BODY {}\r\n", article_id))
+    }
+
     /// Retrieves the body of the article id.
     pub fn body_by_id(&mut self, article_id: &str) -> NNTPResult<Vec<String>> {
         self.retrieve_body(&format!("BODY {}\r\n", article_id))
@@ -202,6 +207,12 @@ impl NNTPStream {
     /// Retrieves the body of the article number in the currently selected newsgroup.
     pub fn body_by_number(&mut self, article_number: isize) -> NNTPResult<Vec<String>> {
         self.retrieve_body(&format!("BODY {}\r\n", article_number))
+    }
+
+    fn retrieve_body_bytes(&mut self, body_command: &str) -> NNTPResult<Vec<String>> {
+        self.stream.write_fmt(format_args!("{}", body_command))?;
+        self.read_response(222)?;
+        self.read_bytes()
     }
 
     fn retrieve_body(&mut self, body_command: &str) -> NNTPResult<Vec<String>> {
@@ -398,6 +409,21 @@ impl NNTPStream {
             bail!("Invalid response code: {}", code);
         }
         Ok((code, message.to_string()))
+    }
+
+    fn read_bytes(&mut self) -> NNTPResult<Vec<u8>> {
+        let mut buffer = [0u8; 2048];
+        let mut bytes = Vec::new();
+        let mut bytes_read = self.stream.read(&mut buffer)?;
+        while bytes_read == buffer.len() {
+            bytes.append(&mut buffer[..].to_owned());
+            bytes_read = self.stream.read(&mut buffer)?;
+        }
+        bytes.append(&mut buffer[..bytes_read].to_owned());
+        if bytes[bytes.len() - 1] == b'.' {
+            bytes.pop().unwrap();
+        }
+        Ok(bytes)
     }
 
     fn read_multiline_response(&mut self) -> NNTPResult<Vec<String>> {
