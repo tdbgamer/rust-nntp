@@ -52,9 +52,14 @@ impl InternalStream {
         use std::time::Duration;
         let connector = SslConnector::builder(SslMethod::tls())?.build();
         let tcp_stream = TcpStream::connect_timeout(&addr, Duration::from_secs(timeout))?;
+        tcp_stream.set_read_timeout(Some(Duration::from_secs(1)))?;
         match connector.connect(&host, tcp_stream) {
             Ok(stream) => Ok(InternalStream::Ssl(stream)),
-            Err(_) => Ok(InternalStream::Normal(TcpStream::connect_timeout(&addr, Duration::from_secs(timeout))?))
+            Err(_) => {
+                let tcp_stream = TcpStream::connect_timeout(&addr, Duration::from_secs(timeout))?;
+                tcp_stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+                Ok(InternalStream::Normal(tcp_stream))
+            }
         }
     }
 }
@@ -395,6 +400,7 @@ impl NNTPStream {
         }
 
         let response = String::from_utf8(line_buffer)?;
+        println!("Response: {}", response);
         let chars_to_trim: &[char] = &['\r', '\n'];
         let trimmed_response = response.trim_matches(chars_to_trim);
         let trimmed_response_vec: Vec<char> = trimmed_response.chars().collect();
@@ -412,16 +418,19 @@ impl NNTPStream {
     }
 
     fn read_bytes(&mut self) -> NNTPResult<Vec<u8>> {
-        let mut buffer = [0u8; 2048];
+        let mut buffer = [0u8; 4096];
         let mut bytes = Vec::new();
-        let mut bytes_read = self.stream.read(&mut buffer)?;
-        while bytes_read == buffer.len() {
-            bytes.append(&mut buffer[..].to_owned());
-            bytes_read = self.stream.read(&mut buffer)?;
-        }
-        bytes.append(&mut buffer[..bytes_read].to_owned());
-        if bytes[bytes.len() - 1] == b'.' {
-            bytes.pop().unwrap();
+        let mut bytes_read = 0;
+        loop {
+            match self.stream.read(&mut buffer) {
+                Ok(read) => {
+                    bytes_read = read;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {bail!("Read timed out")}
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {break;}
+                Err(e) => {return Err(failure::Error::from(e))}
+            };
+            bytes.append(&mut buffer[..bytes_read].to_owned());
         }
         Ok(bytes)
     }
