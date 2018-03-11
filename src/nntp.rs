@@ -394,7 +394,7 @@ impl NNTPStream {
             line_buffer.push(byte_buffer[0]);
         }
 
-        let response = String::from_utf8(line_buffer).unwrap();
+        let response = String::from_utf8(line_buffer)?;
         let chars_to_trim: &[char] = &['\r', '\n'];
         let trimmed_response = response.trim_matches(chars_to_trim);
         let trimmed_response_vec: Vec<char> = trimmed_response.chars().collect();
@@ -403,7 +403,7 @@ impl NNTPStream {
         }
 
         let v: Vec<&str> = trimmed_response.splitn(2, ' ').collect();
-        let code: isize = FromStr::from_str(v[0]).unwrap();
+        let code: isize = FromStr::from_str(v[0])?;
         let message = v[1];
         if !expected_code.into().contains(&code) {
             bail!("Invalid response code: {}", code);
