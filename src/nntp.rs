@@ -417,6 +417,7 @@ impl NNTPStream {
         Ok((code, message.to_string()))
     }
 
+    #[allow(unused_assignments)]
     fn read_bytes(&mut self) -> NNTPResult<Vec<u8>> {
         let mut buffer = [0u8; 4096];
         let mut bytes = Vec::new();
