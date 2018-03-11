@@ -195,7 +195,7 @@ impl NNTPStream {
     }
 
     /// Retrieves the body of the article id as bytes.
-    pub fn body_by_id_bytes(&mut self, article_id: &str) {
+    pub fn body_by_id_bytes(&mut self, article_id: &str) -> NNTPResult<Vec<u8>> {
         self.retrieve_body_bytes(&format!("BODY {}\r\n", article_id))
     }
 
@@ -209,7 +209,7 @@ impl NNTPStream {
         self.retrieve_body(&format!("BODY {}\r\n", article_number))
     }
 
-    fn retrieve_body_bytes(&mut self, body_command: &str) -> NNTPResult<Vec<String>> {
+    fn retrieve_body_bytes(&mut self, body_command: &str) -> NNTPResult<Vec<u8>> {
         self.stream.write_fmt(format_args!("{}", body_command))?;
         self.read_response(222)?;
         self.read_bytes()
