@@ -3,6 +3,8 @@
 #[macro_use]
 extern crate failure;
 extern crate openssl;
+#[macro_use]
+extern crate log;
 
 //#![feature(collections)]
 
@@ -14,6 +16,7 @@ use std::vec::Vec;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::ops::Deref;
+use std::time::Duration;
 
 use failure::Error;
 use openssl::ssl::{SslMethod, SslConnector, SslStream};
@@ -51,14 +54,36 @@ impl InternalStream {
     pub fn connect(host: &str, addr: &SocketAddr, timeout: u64) -> NNTPResult<Self> {
         use std::time::Duration;
         let connector = SslConnector::builder(SslMethod::tls())?.build();
-        let tcp_stream = TcpStream::connect_timeout(&addr, Duration::from_secs(timeout))?;
-        tcp_stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+        let tcp_stream = TcpStream::connect_timeout(&addr, Duration::from_millis(timeout))?;
+        tcp_stream.set_read_timeout(Some(Duration::from_millis(500)))?;
         match connector.connect(&host, tcp_stream) {
             Ok(stream) => Ok(InternalStream::Ssl(stream)),
             Err(_) => {
-                let tcp_stream = TcpStream::connect_timeout(&addr, Duration::from_secs(timeout))?;
-                tcp_stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+                let tcp_stream = TcpStream::connect_timeout(&addr, Duration::from_millis(timeout))?;
+                tcp_stream.set_read_timeout(Some(Duration::from_millis(500)))?;
                 Ok(InternalStream::Normal(tcp_stream))
+            }
+        }
+    }
+
+    pub fn set_read_timeout(&mut self, duration: Option<Duration>) -> NNTPResult<()> {
+        match *self {
+            InternalStream::Ssl(ref mut stream) => {
+                stream.get_mut().set_read_timeout(duration)?
+            }
+            InternalStream::Normal(ref mut stream) => {
+                stream.set_read_timeout(duration)?
+            }
+        }
+        Ok(())
+    }
+    pub fn read_timeout(&mut self) -> NNTPResult<Option<Duration>> {
+        match *self {
+            InternalStream::Ssl(ref stream) => {
+                Ok(stream.get_ref().read_timeout()?)
+            }
+            InternalStream::Normal(ref stream) => {
+                Ok(stream.read_timeout()?)
             }
         }
     }
@@ -143,7 +168,7 @@ impl NewsGroup {
 fn open_socket(addr: (&str, u16)) -> NNTPResult<InternalStream> {
     let mut last_error = format_err!("Every socket failed to connect");
     for socket_addr in addr.to_socket_addrs()? {
-        match InternalStream::connect(&addr.0, &socket_addr, 10) {
+        match InternalStream::connect(&addr.0, &socket_addr, 500) {
             Ok(stream) => return Ok(stream),
             Err(e) => {
                 last_error = e;
@@ -200,8 +225,13 @@ impl NNTPStream {
     }
 
     /// Retrieves the body of the article id as bytes.
-    pub fn body_by_id_bytes(&mut self, article_id: &str) -> NNTPResult<Vec<u8>> {
-        self.retrieve_body_bytes(&format!("BODY {}\r\n", article_id))
+    pub fn body_by_id_unknown_bytes(&mut self, article_id: &str) -> NNTPResult<Vec<u8>> {
+        self.retrieve_body_unknown_bytes(&format!("BODY {}\r\n", article_id))
+    }
+
+    /// Retrieves the body of the article id as bytes.
+    pub fn body_by_id_bytes(&mut self, article_id: &str, bytes_to_read: usize) -> NNTPResult<Vec<u8>> {
+        self.retrieve_body_bytes(&format!("BODY {}\r\n", article_id), bytes_to_read)
     }
 
     /// Retrieves the body of the article id.
@@ -214,10 +244,16 @@ impl NNTPStream {
         self.retrieve_body(&format!("BODY {}\r\n", article_number))
     }
 
-    fn retrieve_body_bytes(&mut self, body_command: &str) -> NNTPResult<Vec<u8>> {
+    fn retrieve_body_bytes(&mut self, body_command: &str, bytes_to_read: usize) -> NNTPResult<Vec<u8>> {
         self.stream.write_fmt(format_args!("{}", body_command))?;
         self.read_response(222)?;
-        self.read_bytes()
+        self.read_bytes(bytes_to_read)
+    }
+
+    fn retrieve_body_unknown_bytes(&mut self, body_command: &str) -> NNTPResult<Vec<u8>> {
+        self.stream.write_fmt(format_args!("{}", body_command))?;
+        self.read_response(222)?;
+        self.read_bytes_arbitrary()
     }
 
     fn retrieve_body(&mut self, body_command: &str) -> NNTPResult<Vec<String>> {
@@ -400,7 +436,7 @@ impl NNTPStream {
         }
 
         let response = String::from_utf8(line_buffer)?;
-        println!("Response: {}", response);
+        info!("Response: {}", response.trim());
         let chars_to_trim: &[char] = &['\r', '\n'];
         let trimmed_response = response.trim_matches(chars_to_trim);
         let trimmed_response_vec: Vec<char> = trimmed_response.chars().collect();
@@ -418,7 +454,7 @@ impl NNTPStream {
     }
 
     #[allow(unused_assignments)]
-    fn read_bytes(&mut self) -> NNTPResult<Vec<u8>> {
+    fn read_bytes_arbitrary(&mut self) -> NNTPResult<Vec<u8>> {
         let mut buffer = [0u8; 4096];
         let mut bytes = Vec::new();
         let mut bytes_read = 0;
@@ -434,6 +470,20 @@ impl NNTPStream {
             bytes.append(&mut buffer[..bytes_read].to_owned());
         }
         Ok(bytes)
+    }
+
+    fn read_bytes(&mut self, bytes_to_read: usize) -> NNTPResult<Vec<u8>> {
+        let timeout = self.stream.read_timeout()?;
+        let mut buffer = vec![0; bytes_to_read];
+        match self.stream.read_exact(&mut buffer) {
+            Ok(_) => {}
+            Err(e) => {
+                self.stream.set_read_timeout(timeout)?;
+                return Err(failure::Error::from(e))
+            }
+        };
+        self.stream.set_read_timeout(timeout)?;
+        Ok(buffer)
     }
 
     fn read_multiline_response(&mut self) -> NNTPResult<Vec<String>> {
