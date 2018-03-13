@@ -55,12 +55,12 @@ impl InternalStream {
         use std::time::Duration;
         let connector = SslConnector::builder(SslMethod::tls())?.build();
         let tcp_stream = TcpStream::connect_timeout(&addr, Duration::from_millis(timeout))?;
-        tcp_stream.set_read_timeout(Some(Duration::from_millis(500)))?;
+//        tcp_stream.set_read_timeout(Some(Duration::from_millis(500)))?;
         match connector.connect(&host, tcp_stream) {
             Ok(stream) => Ok(InternalStream::Ssl(stream)),
             Err(_) => {
                 let tcp_stream = TcpStream::connect_timeout(&addr, Duration::from_millis(timeout))?;
-                tcp_stream.set_read_timeout(Some(Duration::from_millis(500)))?;
+//                tcp_stream.set_read_timeout(Some(Duration::from_millis(500)))?;
                 Ok(InternalStream::Normal(tcp_stream))
             }
         }
@@ -77,6 +77,7 @@ impl InternalStream {
         }
         Ok(())
     }
+
     pub fn read_timeout(&mut self) -> NNTPResult<Option<Duration>> {
         match *self {
             InternalStream::Ssl(ref stream) => {
@@ -84,6 +85,17 @@ impl InternalStream {
             }
             InternalStream::Normal(ref stream) => {
                 Ok(stream.read_timeout()?)
+            }
+        }
+    }
+
+    pub fn set_nonblocking(&mut self, nonblocking: bool) -> NNTPResult<()> {
+        match *self {
+            InternalStream::Ssl(ref mut stream) => {
+                Ok(stream.get_mut().set_nonblocking(nonblocking)?)
+            }
+            InternalStream::Normal(ref stream) => {
+                Ok(stream.set_nonblocking(nonblocking)?)
             }
         }
     }
@@ -253,7 +265,7 @@ impl NNTPStream {
     fn retrieve_body_unknown_bytes(&mut self, body_command: &str) -> NNTPResult<Vec<u8>> {
         self.stream.write_fmt(format_args!("{}", body_command))?;
         self.read_response(222)?;
-        self.read_bytes_arbitrary()
+        self.read_bytes_unknown()
     }
 
     fn retrieve_body(&mut self, body_command: &str) -> NNTPResult<Vec<String>> {
@@ -454,26 +466,37 @@ impl NNTPStream {
     }
 
     #[allow(unused_assignments)]
-    fn read_bytes_arbitrary(&mut self) -> NNTPResult<Vec<u8>> {
+    fn read_bytes_unknown(&mut self) -> NNTPResult<Vec<u8>> {
         let mut buffer = [0u8; 4096];
         let mut bytes = Vec::new();
         let mut bytes_read = 0;
+        let terminator = [b'\r', b'\n', b'.', b'\r', b'\n'];
         loop {
             match self.stream.read(&mut buffer) {
                 Ok(read) => {
                     bytes_read = read;
+                    if bytes_read == 0 {
+                        break;
+                    }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {bail!("Read timed out")}
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {break;}
+//                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {bail!("Read timed out")}
+//                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {break;}
                 Err(e) => {return Err(failure::Error::from(e))}
             };
             bytes.append(&mut buffer[..bytes_read].to_owned());
+            if bytes[bytes.len() - terminator.len()..] == terminator[..] {
+                let bytes_len = bytes.len();
+                bytes.drain(bytes_len - terminator.len()..);
+                break;
+            }
         }
         Ok(bytes)
     }
 
     fn read_bytes(&mut self, bytes_to_read: usize) -> NNTPResult<Vec<u8>> {
         let timeout = self.stream.read_timeout()?;
+        self.stream.set_read_timeout(None)?;
+        self.stream.set_nonblocking(false)?;
         let mut buffer = vec![0; bytes_to_read];
         match self.stream.read_exact(&mut buffer) {
             Ok(_) => {}
